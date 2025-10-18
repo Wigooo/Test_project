@@ -1,19 +1,18 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
 
 # --- Load model + preprocessing artifacts ---
-with open("xgb_full_pipeline.pkl", "rb") as f:
-    artifacts = pickle.load(f)
+with open("classifier2.pkl", "rb") as model_file:
+    artifacts = pickle.load(model_file)
 
 model = artifacts["model"]
-yeo = artifacts.get("yeo", None)
+yeo = artifacts["yeo"]
 columns = artifacts["columns"]
 mapping = artifacts["mapping"]
 
-# --- Load dataset for dropdowns ---
+# --- Load dataset to extract categorical options ---
 df = pd.read_csv("global_house_purchase_dataset.csv")
 countries = sorted(df["country"].dropna().unique())
 cities = sorted(df["city"].dropna().unique())
@@ -24,46 +23,54 @@ st.set_page_config(page_title="🏠 House Purchase Predictor", page_icon="🏠")
 st.title("🏠 House Purchase Decision Predictor (XGBoost)")
 st.write("Enter details to predict whether the buyer will **Buy or Not Buy** the house.")
 
-# --- Categorical selections ---
-st.subheader("🌍 Property Info")
+# --- Furnishing ---
+st.subheader("🏡 Furnishing Status")
+furnishing_status_selected = st.selectbox("Select Furnishing Status", list(mapping.keys()), index=0)
+input_data = {"furnishing_status": mapping[furnishing_status_selected]}
+
+# --- Location & property type ---
+st.subheader("🌍 Property Location & Type")
 selected_country = st.selectbox("Country", countries, index=0)
 selected_city = st.selectbox("City", cities, index=0)
 selected_type = st.selectbox("Property Type", property_types, index=0)
-selected_furnish = st.selectbox("Furnishing Status", list(mapping.keys()), index=0)
 
-# --- Numeric Inputs ---
-st.subheader("📊 Buyer & Property Details")
+# --- Numerical features ---
+st.subheader("📊 Numerical Features")
 
+# Default values that tend to make a person BUY
 def smart_default(col):
     name = col.lower()
-    if "income" in name: return 20000.0
-    if "value" in name or "price" in name: return 500000.0
-    if "loan" in name: return 400000.0
-    if "credit" in name: return 450.0
-    if "ratio" in name: return 0.8
-    if "age" in name: return 24.0
-    if "depend" in name: return 4.0
-    if "room" in name: return 1.0
-    if "bath" in name: return 1.0
-    if "garage" in name or "garden" in name: return 0.0
-    if "crime" in name: return 20.0
-    if "constructed" in name or "year" in name: return 1980.0
+    if "income" in name: return 150000.0
+    if "value" in name or "price" in name: return 200000.0
+    if "loan" in name: return 100000.0
+    if "credit" in name: return 780.0
+    if "ratio" in name: return 0.2
+    if "age" in name: return 35.0
+    if "depend" in name: return 1.0
+    if "room" in name: return 4.0
+    if "bath" in name: return 3.0
+    if "garage" in name or "garden" in name: return 1.0
+    if "crime" in name: return 0.5
+    if "constructed" in name or "year" in name: return 2019.0
     return 0.0
 
-input_data = {"furnishing_status": mapping[selected_furnish]}
-num_features = [c for c in columns if all(x not in c for x in ["country_", "city_", "property_type_", "furnishing_status"])]
+num_features = [
+    col for col in columns
+    if all(x not in col for x in ["country_", "city_", "property_type_", "furnishing_status"])
+]
 
 for col in num_features:
-    input_data[col] = st.number_input(f"{col}:", value=float(smart_default(col)))
+    default_val = float(smart_default(col))
+    input_data[col] = st.number_input(f"{col}:", value=default_val, step=1.0)
 
-# --- Create input DataFrame ---
+# --- Prepare DataFrame ---
 df_input = pd.DataFrame([input_data])
 
-# --- Apply transformation ---
+# --- Transformations ---
 if "emi_to_income_ratio" in df_input.columns and yeo:
     df_input["emi_to_income_ratio"] = yeo.transform(df_input[["emi_to_income_ratio"]])
 
-# --- One-hot encoding ---
+# --- One-Hot Encoding ---
 for col in columns:
     if col.startswith("country_"):
         df_input[col] = 1 if col == f"country_{selected_country}" else 0
@@ -74,25 +81,28 @@ for col in columns:
     elif col not in df_input.columns:
         df_input[col] = 0
 
+# --- Align columns safely ---
 df_input = df_input.reindex(columns=columns, fill_value=0)
 
 # --- Prediction ---
 if st.button("🔮 Predict Decision", type="primary"):
     pred = model.predict(df_input)[0]
-
-    st.write(f"Raw model output: {pred}")
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(df_input)[0]
-        st.write(f"Probabilities: {proba}")
-
-    # Label based on class meaning
-    label = "✅ BUY" if pred == 1 else "❌ NOT BUY"
-
-    if hasattr(model, "predict_proba"):
         confidence = float(max(proba))
         st.progress(confidence)
         st.info(f"Prediction Confidence: {confidence*100:.1f}%")
+    else:
+        confidence = None
+
+    if hasattr(model, "classes_"):
+        buy_label = max(model.classes_)
+    else:
+        buy_label = 1
+
+    label = "✅ BUY" if pred == buy_label else "❌ NOT BUY"
 
     st.subheader(f"### 🧠 Model Prediction: {label}")
+    st.caption(f"Confidence: {confidence*100:.1f}%" if confidence else "Confidence not available")
 
-st.caption("Default values are tuned for a likely 'NOT BUY' case. Adjust features to test 'BUY' scenarios.")
+st.caption("Default values are tuned for a likely **BUY** case. Adjust to test NOT BUY scenarios.")
